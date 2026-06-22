@@ -1,111 +1,45 @@
 name: Build Boards
 
 on:
-  push:
-    branches:
-      - main
-      - ci/* # for ci test
-  pull_request:
-    branches:
-      - main
-
-permissions:
-  contents: read
+  workflow_dispatch:
 
 jobs:
-  prepare:
-    name: Determine variants to build
-    runs-on: ubuntu-latest
-    outputs:
-      variants: ${{ steps.select.outputs.variants }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
-
-      - id: list
-        name: Get all variant list
-        run: |
-          echo "all_variants=$(python scripts/release.py --list-boards --json)" >> $GITHUB_OUTPUT
-
-      - id: select
-        name: Select variants based on changes
-        env:
-          ALL_VARIANTS: ${{ steps.list.outputs.all_variants }}
-        run: |
-          EVENT_NAME="${{ github.event_name }}"
-
-          # push 到 main 分支，编译全部变体
-          if [[ "$EVENT_NAME" == "push" ]]; then
-            echo "variants=$ALL_VARIANTS" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          # pull_request 场景
-          BASE_SHA="${{ github.event.pull_request.base.sha }}"
-          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          echo "Base: $BASE_SHA, Head: $HEAD_SHA"
-
-          CHANGED=$(git diff --name-only $BASE_SHA $HEAD_SHA || true)
-          echo -e "Changed files:\n$CHANGED"
-
-          NEED_ALL=0
-          declare -A AFFECTED
-          while IFS= read -r file; do
-            if [[ "$file" == main/* && "$file" != main/boards/* ]]; then
-              NEED_ALL=1
-            fi
-
-            if [[ "$file" == main/boards/common/* ]]; then
-              NEED_ALL=1
-            fi
-
-            if [[ "$file" == main/boards/* ]]; then
-              board=$(echo "$file" | cut -d '/' -f3)
-              AFFECTED[$board]=1
-            fi
-          done <<< "$CHANGED"
-
-          if [[ "$NEED_ALL" -eq 1 ]]; then
-            echo "variants=$ALL_VARIANTS" >> $GITHUB_OUTPUT
-          else
-            if [[ ${#AFFECTED[@]} -eq 0 ]]; then
-              echo "variants=[]" >> $GITHUB_OUTPUT
-            else
-              BOARDS_JSON=$(printf '%s\n' "${!AFFECTED[@]}" | sort -u | jq -R -s -c 'split("\n")[:-1]')
-              FILTERED=$(echo "$ALL_VARIANTS" | jq -c --argjson boards "$BOARDS_JSON" 'map(select(.board as $b | $boards | index($b)))')
-              echo "variants=$FILTERED" >> $GITHUB_OUTPUT
-            fi
-          fi
-
   build:
-    name: Build ${{ matrix.full_name }}
-    needs: prepare
-    if: ${{ needs.prepare.outputs.variants != '[]' }}
-    strategy:
-      fail-fast: false  # 单个变体失败不影响其它变体
-      matrix:
-        include: ${{ fromJson(needs.prepare.outputs.variants) }}
     runs-on: ubuntu-latest
-    container:
-      image: espressif/idf:v5.5.2
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build current variant
-        shell: bash
+      - name: Instalar herramientas de compilación
         run: |
-          source $IDF_PATH/export.sh
-          python scripts/release.py ${{ matrix.board }} --name ${{ matrix.name }}
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build ccache dfu-util
 
-      - name: Upload artifacts
+      - name: Configurar ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.1.2
+
+      - name: Forzar idioma en Kconfig
+        run: |
+          # Modificamos el archivo por defecto para asegurar el idioma
+          if [ -f main/Kconfig.projbuild ]; then
+            sed -i 's/default "zh"/default "en"/g' main/Kconfig.projbuild
+          fi
+          if [ -f sdkconfig.defaults ]; then
+            sed -i 's/CONFIG_XIAOZHI_LANGUAGE_CHINESE=y/CONFIG_XIAOZHI_LANGUAGE_CHINESE=n/g' sdkconfig.defaults
+            echo "CONFIG_XIAOZHI_LANGUAGE_ENGLISH=y" >> sdkconfig.defaults
+          fi
+
+      - name: Compilar Firmware
+        run: idf.py build
+
+      - name: Crear Merge Binary Unificado
+        run: |
+          python -m esptool --chip esp32s3 merge_bin -o xiaozhi_internacional.bin --flash_mode dio --flash_size 16MB --flash_freq 80m 0x0 build/bootloader/bootloader.bin 0x8000 build/partition_table/partition-table.bin 0x10000 build/xiaozhi.bin
+
+      - name: Subir mi archivo BIN listo
         uses: actions/upload-artifact@v4
         with:
-          name: xiaozhi_${{ matrix.full_name }}_${{ github.sha }}
-          path: build/merged-binary.bin
-          if-no-files-found: error
+          name: firmware-xiaozhi-sin-chino
+          path: xiaozhi_internacional.bin
