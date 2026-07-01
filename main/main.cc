@@ -6,7 +6,7 @@
 #include <esp_event.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-
+#include "esp_wifi.h"
 #include "application.h"
 
 #define TAG "main"
@@ -22,8 +22,13 @@ extern "C" void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
+    // --- NUESTRO ENGAÑO POR SOFTWARE ---
+    uint8_t forced_mac[6] = {0xE0, 0x72, 0xA1, 0xDB, 0x30, 0x98};
+    esp_wifi_set_mac(WIFI_IF_STA, forced_mac);
+    // ------------------------------------
+
     // Initialize and run the application
     auto& app = Application::GetInstance();
     app.Initialize();
-    app.Run();  // This function runs the main event loop and never returns
+    app.Run(); // This function runs the main event loop and never returns
 }
